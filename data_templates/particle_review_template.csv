@@ -1,0 +1,4 @@
+image_path,particle_id,is_hollow,is_agglomerate,agglomerate_group_id,review_note
+图像SEM数据/GH3536/示例批次/示例图.tiff,1,0,0,,
+图像SEM数据/GH3536/示例批次/示例图.tiff,2,1,0,,疑似空心，需要截面图确认
+图像SEM数据/GH3536/示例批次/示例图.tiff,3,0,1,1,同一团聚组至少3个颗粒

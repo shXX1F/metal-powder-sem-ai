@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+dist/
+build/
+*.spec
+runs/
+.runtime/
+.deps/
+
+# Local datasets, training exports, and model weights
+data/
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.zip
+*.xlsx
+*.csv
+!data_templates/
+!data_templates/*.csv
