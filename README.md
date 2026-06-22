@@ -1,3 +1,4 @@
+<img width="1912" height="1809" alt="b4439acfee104218b0e54fd9c3fbf983" src="https://github.com/user-attachments/assets/ffb6b4ff-a75c-4369-9b99-e58802cee092" />
 # 金属粉末 SEM 图像 AI 识别系统
 
 本项目按给定国标逻辑实现：球形度 `Q = 4*pi*A/P^2`、球形颗粒轴比 `Lmajor/Lminor <= 1.2`、球形率 `S = n/N*100%`、空心粉孔洞占比 `>=25%`、团聚体“大球附着小球且小球直径 > 大球直径 0.5 倍”。
