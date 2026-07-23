@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableExtensions
-title Metal Powder GUI Launcher
+title Metal Powder GUI LAN Launcher
 
 cd /d "%~dp0"
 if errorlevel 1 (
@@ -30,9 +30,8 @@ if not exist "%~dp0tools\launch_gui.py" (
     exit /b 1
 )
 
-echo Starting Metal Powder GUI...
-echo The browser will open after the service is ready.
-"%PYTHON_EXE%" "%~dp0tools\launch_gui.py" --host 127.0.0.1 --port 8501 %*
+echo Starting Metal Powder GUI in LAN mode...
+"%PYTHON_EXE%" "%~dp0tools\launch_gui.py" --host 0.0.0.0 --port 8501 %*
 if errorlevel 1 (
     echo.
     echo ERROR: GUI startup failed.
@@ -40,5 +39,8 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+echo.
+echo LAN access also requires Windows Firewall to allow TCP port 8501.
+pause
 
 endlocal

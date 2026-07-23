@@ -160,10 +160,49 @@ def mask_overlap_metrics(a: TileCandidate, b: TileCandidate) -> Tuple[float, flo
     return float(iou), float(overlap_smaller)
 
 
+def _candidate_equivalent_diameter(candidate: TileCandidate) -> float:
+    area = max(0.0, float(cv2.contourArea(candidate.contour)))
+    return math.sqrt(4.0 * area / math.pi) if area > 0 else 0.0
+
+
+def _candidate_centroid(candidate: TileCandidate) -> Tuple[float, float]:
+    return contour_centroid(candidate.contour, candidate.bbox_xyxy)
+
+
+def _is_protected_parent_fragment(
+    candidate: TileCandidate,
+    existing: TileCandidate,
+    diameter_ratio_threshold: float = 1.6,
+    center_distance_factor: float = 0.0,
+) -> bool:
+    """Treat later small masks inside earlier large masks as duplicate fragments."""
+    if existing.edge_clearance <= candidate.edge_clearance:
+        return False
+
+    candidate_diameter = _candidate_equivalent_diameter(candidate)
+    existing_diameter = _candidate_equivalent_diameter(existing)
+    if candidate_diameter <= 0 or existing_diameter <= 0:
+        return False
+    if existing_diameter < candidate_diameter * float(diameter_ratio_threshold):
+        return False
+
+    cx, cy = _candidate_centroid(candidate)
+    signed_distance = cv2.pointPolygonTest(existing.contour, (cx, cy), True)
+    if signed_distance >= 0:
+        return True
+
+    # Keep genuine nearby satellite particles, but remove tiny masks whose
+    # center is almost on the protected whole-image boundary.
+    return -signed_distance <= candidate_diameter * float(center_distance_factor)
+
+
 def dedupe_tile_candidates(
     candidates: Sequence[TileCandidate],
     iou_threshold: float = 0.25,
     overlap_threshold: float = 0.70,
+    protect_parent_fragments: bool = False,
+    protected_parent_diameter_ratio: float = 1.6,
+    protected_parent_center_distance_factor: float = 0.0,
 ) -> list[TileCandidate]:
     ordered = sorted(
         candidates,
@@ -178,6 +217,14 @@ def dedupe_tile_candidates(
             intersection_bbox = bbox_intersection(candidate.bbox_xyxy, existing.bbox_xyxy)
             if intersection_bbox is None:
                 continue
+            if protect_parent_fragments and _is_protected_parent_fragment(
+                candidate,
+                existing,
+                diameter_ratio_threshold=protected_parent_diameter_ratio,
+                center_distance_factor=protected_parent_center_distance_factor,
+            ):
+                duplicate = True
+                break
             ix1, iy1, ix2, iy2 = intersection_bbox
             bbox_inter_area = float((ix2 - ix1) * (iy2 - iy1))
             existing_area = max(1.0, float(cv2.contourArea(existing.contour)))
@@ -237,6 +284,9 @@ def merge_instance_groups(
     *groups: Sequence[InstanceMask],
     iou_threshold: float = 0.25,
     overlap_threshold: float = 0.70,
+    protect_parent_fragments: bool = True,
+    protected_parent_diameter_ratio: float = 1.6,
+    protected_parent_center_distance_factor: float = 0.0,
 ) -> List[InstanceMask]:
     """Merge multiple inference passes and remove duplicated particles.
 
@@ -263,6 +313,9 @@ def merge_instance_groups(
         candidates,
         iou_threshold=iou_threshold,
         overlap_threshold=overlap_threshold,
+        protect_parent_fragments=protect_parent_fragments,
+        protected_parent_diameter_ratio=protected_parent_diameter_ratio,
+        protected_parent_center_distance_factor=protected_parent_center_distance_factor,
     )
     instances: list[InstanceMask] = []
     for particle_id, candidate in enumerate(kept, start=1):
@@ -411,6 +464,9 @@ class MaskRCNNSegmenter:
             pretrained=False,
             detections_per_img=self.max_detections,
         )
+        # Torchvision otherwise drops detections below its internal 0.05
+        # threshold before the application-level threshold can inspect them.
+        self.model.roi_heads.score_thresh = float(self.score_threshold)
         state = torch.load(weights_path, map_location=self.device)
         self.model.load_state_dict(state["model"] if "model" in state else state)
         self.model.to(self.device)
@@ -436,6 +492,9 @@ class MaskRCNNSegmenter:
         rgb = cv2.cvtColor(inference_bgr, cv2.COLOR_BGR2RGB)
         tensor = torch.from_numpy(rgb).permute(2, 0, 1).float() / 255.0
         tensor = tensor.to(self.device)
+        # The GUI can lower the threshold for an automatic retry. Keep the
+        # Torchvision internal filter synchronized with the public setting.
+        self.model.roi_heads.score_thresh = float(self.score_threshold)
         with torch.no_grad():
             pred = self.model([tensor])[0]
 
@@ -477,6 +536,7 @@ class MaskRCNNSegmenter:
         overlap: int = 224,
         nms_iou_threshold: float = 0.25,
         nms_overlap_threshold: float = 0.70,
+        ownership_filter: bool = True,
     ) -> List[InstanceMask]:
         height, width = image_bgr.shape[:2]
         tile_size = max(256, int(tile_size))
@@ -516,7 +576,9 @@ class MaskRCNNSegmenter:
                     if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
                         continue
                     cx, cy = contour_centroid(contour, bbox)
-                    if not (core_x1 <= cx < core_x2 and core_y1 <= cy < core_y2):
+                    if ownership_filter and not (
+                        core_x1 <= cx < core_x2 and core_y1 <= cy < core_y2
+                    ):
                         continue
                     candidates.append(
                         TileCandidate(
