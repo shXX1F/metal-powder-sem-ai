@@ -18,12 +18,12 @@ COLOR_BGR = {
 
 
 def class_name_and_color(feature: Dict) -> Tuple[str, Tuple[int, int, int]]:
-    # 当前 GUI 暂不展示空心粉识别，避免把表面孔洞误读为严格空心粉。
+    # OpenCV Hershey 字体不支持中文；使用短代码保证跨平台导出不出现问号。
     if feature.get("is_agglomerate"):
-        return "团聚体", COLOR_BGR["agglomerate"]
+        return "AGG", COLOR_BGR["agglomerate"]
     if feature.get("is_spherical"):
-        return "球形", COLOR_BGR["spherical"]
-    return "非球形", COLOR_BGR["non_spherical"]
+        return "SPH", COLOR_BGR["spherical"]
+    return "NON-SPH", COLOR_BGR["non_spherical"]
 
 
 def draw_instances(
@@ -76,9 +76,9 @@ def draw_instances(
     output = cv2.addWeighted(overlay, alpha, output, 1.0 - alpha, 0)
 
     legend = [
-        ("球形", COLOR_BGR["spherical"]),
-        ("非球形", COLOR_BGR["non_spherical"]),
-        ("团聚体", COLOR_BGR["agglomerate"]),
+        ("SPH", COLOR_BGR["spherical"]),
+        ("NON-SPH", COLOR_BGR["non_spherical"]),
+        ("AGG", COLOR_BGR["agglomerate"]),
     ]
     x, y = 12, 24
     for label, color in legend:

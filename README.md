@@ -1,6 +1,6 @@
 # 金属粉末 SEM 图像 AI 识别系统
 
-本项目按给定国标逻辑实现：球形度 `Q = 4*pi*A/P^2`、球形颗粒轴比 `Lmajor/Lminor <= 1.2`、球形率 `S = n/N*100%`、空心粉孔洞占比 `>=25%`、团聚体“大球附着小球且小球直径 > 大球直径 0.5 倍”。
+本项目实现：球形度 Q = 4*pi*A/P^2、圆形度 C = sqrt(Q)、球形率 S = n/N*100%、空心粉孔洞占比 >=25%，以及尺度感知的团聚颗粒组判定。生产默认球形规则为 Crofton 周长下 C >= 0.9075；团聚率同时输出数量口径和面积口径。
 
 ## 模块划分与数据流
 
@@ -9,7 +9,7 @@
 3. `feature_extract.py`：对每个颗粒 mask/contour 计算面积、周长、Q 值、长短轴、轴比、孔洞占比。
 4. `classify_stat.py`：执行规则判定，统计总颗粒数、球形颗粒数、空心粉数、团聚体数、球形率 S。
 5. `visualize.py`：绿色=球形、红色=非球形、蓝色=空心粉、黄色=团聚体，叠加 mask、轮廓、标签。
-6. `report.py`：导出 Excel，包含统计结果和颗粒级特征。
+6. `report.py`：导出 Excel，包含统计结果、颗粒级特征和团聚颗粒对判定证据。
 7. `train.py`：Mask R-CNN 实例分割训练，以及 XGBoost 几何特征分类器训练。
 8. `infer.py`：端到端推理入口，输出可视化图和 Excel 报告。
 
@@ -120,7 +120,51 @@ python -m metal_powder_sem_ai.train classifier ^
 ## 核心判定逻辑
 
 - 球形度：`Q = 4*pi*A/P^2`
-- 球形颗粒：`Lmajor/Lminor <= 1.2`
+- 球形颗粒：生产默认按 Crofton 圆形度 C >= 0.9075；轴比规则保留为可选项
 - 球形率：`S = 球形颗粒数 / 总颗粒数 * 100%`，用 GB/T 8170 的五留双规则保留两位小数
 - 空心粉：`hole_area / particle_area >= 0.25`
-- 团聚体：两个颗粒接触，且 `small_diameter > big_diameter * 0.5`
+- 团聚体：物理间隙满足阈值，并具有足够接触弧或掩膜重叠；至少 3 颗形成强接触连通组
+- 跨倍率换算：tolerance_px = ceil(tolerance_um / pixel_size_um)
+
+团聚率工程默认参数为 0.30 um、接触弧占比 0.12、掩膜重叠占比 0.03。它们必须使用人工团聚真值进一步校准，流程见 docs/agglomeration_calibration_workflow.md。
+
+## 双页面 GUI
+
+Streamlit GUI 顶部提供两个相互独立的页面：
+
+- `SEM 图像识别`：使用原有 SEM 图片、Mask R-CNN 权重、比例尺和统计参数。
+- `空心粉图像识别`：单独上传一张或多张图片，也可上传 ZIP 图片包；分别选择 `particle` 和 `hollow` 权重，运行整图与重叠切块融合推理。
+
+空心粉页面完整复用 `hollow_version0` 的双模型与后处理逻辑，输出：
+
+- 最终汇总图、hollow 候选图和 particle 分割图
+- 颗粒总数、候选数、空心粉数量和空心粉率
+- 逐图统计、`summary.json`、`summary.txt` 和候选明细
+- 包含所有图片、摘要和日志的 ZIP 结果包
+
+两个页面使用不同的上传控件、权重状态和结果目录，互不覆盖。空心粉结果保存在：
+
+```text
+runs/hollow_gui/<时间戳>/
+  input/
+  result/
+```
+
+启动方式：
+
+```bash
+python tools/run_streamlit_local.py
+```
+
+然后访问 `http://127.0.0.1:8501`。如未准备本地依赖，也可先执行 `pip install -r requirements.txt`。
+
+### 稳定启动与连接排查
+
+Windows 本机推荐双击 `start_gui.bat`。它会在后台启动守护进程，等待 `/_stcore/health` 返回正常后再打开浏览器；Streamlit 异常退出时会自动重启，重复双击不会启动多个实例。
+
+- 本机访问：运行 `start_gui.bat`，打开 `http://127.0.0.1:8501`
+- 局域网访问：由管理员运行 `start_gui_lan.bat`，并放行防火墙 TCP 8501
+- 停止服务：运行 `stop_gui.bat`
+- 运行日志：`runs/gui_server.log`
+
+如果浏览器提示无法连接，先检查 `http://127.0.0.1:8501/_stcore/health` 是否返回 `ok`，再查看运行日志。关闭浏览器不会停止后台服务。

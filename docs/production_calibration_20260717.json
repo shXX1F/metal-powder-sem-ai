@@ -1,0 +1,62 @@
+{
+  "schema_version": 2,
+  "created_at": "2026-07-17",
+  "model": {
+    "architecture": "Mask R-CNN ResNet-50 FPN",
+    "source_weights": "tos://tos-mlp-zgci/fxx/runs/model_soup_old_round4e42_20260716/maskrcnn_particle_soup_a0075.pth",
+    "production_weights": "tos://tos-mlp-zgci/fxx/runs/maskrcnn_particle_final_calibrated_20260717.pth",
+    "sha256": "436f9693fae8fed5f3476504342c95c59fa337c905114c427f7158c3c78a24a9",
+    "composition": "92.5% old stable weights + 7.5% Round4 epoch 42 weights"
+  },
+  "inference": {
+    "mode": "merged",
+    "score_threshold": 0.62,
+    "mask_threshold": 0.68,
+    "max_detections": 10000,
+    "max_inference_side": 1280,
+    "tile_size": 640,
+    "tile_overlap": 192,
+    "tile_ownership_filter": true
+  },
+  "measurement": {
+    "diameter_method": "feret_max",
+    "percentile_method": "lower_rank",
+    "perimeter_method": "crofton",
+    "sphericity_q_formula": "4*pi*A/P^2",
+    "roundness_c_formula": "sqrt(Q)",
+    "system_spherical_roundness_threshold": 0.9075,
+    "reference_spherical_roundness_threshold": 0.9
+  },
+  "agglomeration": {
+    "status": "engineering_default_pending_truth_calibration",
+    "rate_formula": "N_agglom/N_total*100%",
+    "area_rate_formula": "A_agglom/A_total*100%",
+    "min_group_size": 3,
+    "requested_tolerance_um": 0.3,
+    "min_contact_ratio": 0.12,
+    "min_overlap_ratio": 0.03,
+    "scale_conversion": "ceil(tolerance_um/pixel_size_um)",
+    "pair_rule": "gap_and_contact_arc_or_mask_overlap",
+    "evidence_export": "report.agglomerate_pairs.csv"
+  },
+  "fixed_eval_20": {
+    "evaluated_images": 20,
+    "system_total_particles": 2404,
+    "reference_total_particles": 2416,
+    "total_particle_error_percent": -0.496689,
+    "particle_count_mae": 8.5,
+    "mean_roundness_c_mae": 0.00846164,
+    "mean_sphericity_q_mae": 0.0137827,
+    "spherical_rate_mae_percent_points": 4.69645,
+    "spherical_particle_f1": 0.8860569715142429,
+    "d50_mae_um": 1.26148,
+    "diameter_mean_mae_um": 1.302544472855766,
+    "diameter_bin_absolute_error": 342,
+    "mean_elapsed_seconds_on_a100": 2.497
+  },
+  "acceptance_artifacts": "tos://tos-mlp-zgci/fxx/runs/stat_calibration_20260717/final_acceptance_20260717",
+  "limitations": [
+    "The fixed 20-image set was used for calibration and model selection; use a new locked holdout for unbiased final acceptance.",
+    "Agglomerate and hollow-powder labels are not yet sufficient for supervised acceptance metrics."
+  ]
+}

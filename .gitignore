@@ -1,23 +1,56 @@
+# Python caches
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local Python environments and bundled runtimes
 .venv/
 venv/
-dist/
-build/
-*.spec
-runs/
+env/
 .runtime/
 .deps/
 
-# Local datasets, training exports, and model weights
+# Build/release artifacts
+dist/
+build/
+*.spec
+*.egg-info/
+
+# Local app/runtime state
+.streamlit/secrets.toml
+*.log
+*.tmp
+*.temp
+pagefile-change-result.json
+
+# Local datasets, evaluation outputs, and generated training artifacts
 data/
+data_98986/
+outputs/
+runs/
+
+# Model weights and exported models
 *.pth
 *.pt
 *.ckpt
 *.onnx
+*.pkl
+*.joblib
+
+# Large/raw data archives and office exports
 *.zip
+*.rar
+*.7z
+*.tar
+*.tar.gz
 *.xlsx
+*.xls
 *.csv
+
+# Keep lightweight templates in git
 !data_templates/
 !data_templates/*.csv

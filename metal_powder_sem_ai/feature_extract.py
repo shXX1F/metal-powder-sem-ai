@@ -6,6 +6,12 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
+try:
+    from skimage.measure import find_contours, perimeter_crofton
+except ImportError:  # pragma: no cover - requirements.txt installs scikit-image.
+    find_contours = None
+    perimeter_crofton = None
+
 from .segment import InstanceMask
 
 
@@ -27,6 +33,54 @@ def _axis_lengths_px(contour: np.ndarray) -> Tuple[float, float, str]:
     major = float(max(width, height))
     minor = float(min(width, height))
     return major, minor, "minAreaRect"
+
+
+def _max_feret_diameter_px(contour: np.ndarray) -> float:
+    """Return the exact maximum caliper diameter of the contour's convex hull."""
+    hull = cv2.convexHull(contour, returnPoints=True)
+    if hull is None:
+        return 0.0
+    points = hull.reshape(-1, 2).astype(np.float64)
+    if len(points) < 2:
+        return 0.0
+
+    max_distance_sq = 0.0
+    chunk_size = 256
+    for start in range(0, len(points), chunk_size):
+        delta = points[start : start + chunk_size, None, :] - points[None, :, :]
+        max_distance_sq = max(max_distance_sq, float(np.max(np.sum(delta * delta, axis=2))))
+    return math.sqrt(max_distance_sq)
+
+
+def _crofton_perimeter_px(mask: np.ndarray, fallback: float) -> float:
+    if perimeter_crofton is None:
+        return float(fallback)
+    padded = np.pad((mask > 0).astype(np.uint8), 1, mode="constant")
+    value = float(perimeter_crofton(padded, directions=4))
+    return value if math.isfinite(value) and value > 0 else float(fallback)
+
+
+def _subpixel_perimeter_px(mask: np.ndarray, fallback: float) -> float:
+    if find_contours is None:
+        return float(fallback)
+    padded = np.pad((mask > 0).astype(np.uint8), 1, mode="constant")
+    paths = find_contours(padded, level=0.5, fully_connected="high")
+    if not paths:
+        return float(fallback)
+    path = max(paths, key=len)
+    if len(path) < 2:
+        return float(fallback)
+    deltas = np.diff(path, axis=0)
+    value = float(np.sqrt(np.sum(deltas * deltas, axis=1)).sum())
+    if not np.allclose(path[0], path[-1]):
+        value += float(np.linalg.norm(path[0] - path[-1]))
+    return value if math.isfinite(value) and value > 0 else float(fallback)
+
+
+def _shape_factor(area_px: float, perimeter_px: float) -> Tuple[float, float]:
+    q_value = _safe_divide(4.0 * math.pi * float(area_px), float(perimeter_px) ** 2)
+    q_value = min(1.0, max(0.0, q_value))
+    return q_value, math.sqrt(q_value)
 
 
 def _geometric_hole_area_px(mask: np.ndarray) -> int:
@@ -118,6 +172,8 @@ def extract_particle_features(
     instance: InstanceMask,
     pixel_size_um: float,
     gray: Optional[np.ndarray] = None,
+    image_shape: Optional[Tuple[int, int]] = None,
+    border_margin_px: int = 1,
 ) -> Dict[str, float]:
     if pixel_size_um <= 0:
         raise ValueError("pixel_size_um 必须大于 0，例如 1 pixel = 0.1 um 则传入 0.1。")
@@ -129,9 +185,18 @@ def extract_particle_features(
 
     perimeter_px = float(cv2.arcLength(contour, closed=True))
     perimeter_um = float(perimeter_px * pixel_size_um)
+    perimeter_crofton_px = _crofton_perimeter_px(mask, fallback=perimeter_px)
+    perimeter_subpixel_px = _subpixel_perimeter_px(mask, fallback=perimeter_px)
+    perimeter_crofton_um = perimeter_crofton_px * pixel_size_um
+    perimeter_subpixel_um = perimeter_subpixel_px * pixel_size_um
 
     # 球形度 Q：严格采用金相法公式 Q = 4*pi*A / P^2。
     q_value = _safe_divide(4.0 * math.pi * area_um2, perimeter_um * perimeter_um)
+    q_contour, roundness_contour = _shape_factor(area_px, perimeter_px)
+    q_crofton, roundness_crofton = _shape_factor(area_px, perimeter_crofton_px)
+    q_subpixel, roundness_subpixel = _shape_factor(area_px, perimeter_subpixel_px)
+    q_value = q_contour
+    roundness = roundness_contour
 
     major_px, minor_px, axis_method = _axis_lengths_px(contour)
     major_um = major_px * pixel_size_um
@@ -147,6 +212,8 @@ def extract_particle_features(
 
     equivalent_diameter_px = math.sqrt(4.0 * area_px / math.pi) if area_px > 0 else 0.0
     equivalent_diameter_um = equivalent_diameter_px * pixel_size_um
+    feret_diameter_px = _max_feret_diameter_px(contour)
+    feret_diameter_um = feret_diameter_px * pixel_size_um
 
     moments = cv2.moments(contour)
     if moments["m00"]:
@@ -158,6 +225,20 @@ def extract_particle_features(
         cy = float((y1 + y2) / 2.0)
 
     x1, y1, x2, y2 = instance.bbox_xyxy
+    bbox_max_diameter_px = float(max(max(0, x2 - x1), max(0, y2 - y1)))
+    bbox_max_diameter_um = bbox_max_diameter_px * pixel_size_um
+    if image_shape is None and gray is not None:
+        image_shape = tuple(int(value) for value in gray.shape[:2])
+    touches_border = False
+    if image_shape is not None:
+        image_height, image_width = image_shape[:2]
+        margin = max(0, int(border_margin_px))
+        touches_border = bool(
+            x1 <= margin
+            or y1 <= margin
+            or x2 >= image_width - margin
+            or y2 >= image_height - margin
+        )
     return {
         "particle_id": int(instance.particle_id),
         "score": float(instance.score),
@@ -165,7 +246,20 @@ def extract_particle_features(
         "area_um2": area_um2,
         "perimeter_px": perimeter_px,
         "perimeter_um": perimeter_um,
+        "perimeter_contour_px": perimeter_px,
+        "perimeter_contour_um": perimeter_um,
+        "perimeter_crofton_px": perimeter_crofton_px,
+        "perimeter_crofton_um": perimeter_crofton_um,
+        "perimeter_subpixel_px": perimeter_subpixel_px,
+        "perimeter_subpixel_um": perimeter_subpixel_um,
         "q_value": q_value,
+        "roundness": roundness,
+        "q_value_contour": q_contour,
+        "roundness_contour": roundness_contour,
+        "q_value_crofton": q_crofton,
+        "roundness_crofton": roundness_crofton,
+        "q_value_subpixel": q_subpixel,
+        "roundness_subpixel": roundness_subpixel,
         "major_axis_px": major_px,
         "minor_axis_px": minor_px,
         "major_axis_um": major_um,
@@ -177,6 +271,15 @@ def extract_particle_features(
         "hole_ratio": hole_ratio,
         "equivalent_diameter_px": equivalent_diameter_px,
         "equivalent_diameter_um": equivalent_diameter_um,
+        "feret_diameter_px": feret_diameter_px,
+        "feret_diameter_um": feret_diameter_um,
+        "bbox_max_diameter_px": bbox_max_diameter_px,
+        "bbox_max_diameter_um": bbox_max_diameter_um,
+        "statistical_diameter_px": feret_diameter_px,
+        "statistical_diameter_um": feret_diameter_um,
+        "statistical_diameter_method": "feret_max",
+        "touches_image_border": touches_border,
+        "valid_for_size_statistics": not touches_border,
         "centroid_x": cx,
         "centroid_y": cy,
         "bbox_x1": int(x1),
@@ -190,8 +293,18 @@ def extract_all_features(
     instances: Sequence[InstanceMask],
     pixel_size_um: float,
     gray: Optional[np.ndarray] = None,
+    image_shape: Optional[Tuple[int, int]] = None,
+    border_margin_px: int = 1,
 ) -> List[Dict[str, float]]:
+    if image_shape is None and gray is not None:
+        image_shape = tuple(int(value) for value in gray.shape[:2])
     return [
-        extract_particle_features(instance, pixel_size_um=pixel_size_um, gray=gray)
+        extract_particle_features(
+            instance,
+            pixel_size_um=pixel_size_um,
+            gray=gray,
+            image_shape=image_shape,
+            border_margin_px=border_margin_px,
+        )
         for instance in instances
     ]

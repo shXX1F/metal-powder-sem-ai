@@ -40,8 +40,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--min-area-px", type=int, default=80)
     parser.add_argument("--peak-min-distance", type=int, default=12)
-    parser.add_argument("--score-threshold", type=float, default=0.5)
-    parser.add_argument("--mask-threshold", type=float, default=0.5)
+    parser.add_argument("--score-threshold", type=float, default=0.62)
+    parser.add_argument("--mask-threshold", type=float, default=0.68)
+    parser.add_argument(
+        "--agglomerate-tolerance-um",
+        type=float,
+        default=0.30,
+        help="团聚接触最大物理间隙，系统会按 pixel_size_um 换算为像素",
+    )
+    parser.add_argument("--min-agglomerate-group-size", type=int, default=3)
+    parser.add_argument("--agglomerate-min-contact-ratio", type=float, default=0.12)
+    parser.add_argument("--agglomerate-min-overlap-ratio", type=float, default=0.03)
     return parser.parse_args()
 
 
@@ -78,7 +87,14 @@ def main() -> None:
         gray=pre.enhanced,
     )
     masks = [instance.mask for instance in instances]
-    classified, stats = classify_particles(features, masks=masks)
+    classified, stats = classify_particles(
+        features,
+        masks=masks,
+        agglomerate_tolerance_um=args.agglomerate_tolerance_um,
+        min_agglomerate_group_size=args.min_agglomerate_group_size,
+        agglomerate_min_contact_ratio=args.agglomerate_min_contact_ratio,
+        agglomerate_min_overlap_ratio=args.agglomerate_min_overlap_ratio,
+    )
 
     visualized = draw_instances(pre.image, instances, classified)
     save_visualization(output_dir / "visualized.png", visualized)
