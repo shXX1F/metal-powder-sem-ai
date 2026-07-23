@@ -1,0 +1,11 @@
+{
+  "evidence_files": 20,
+  "available_pairs": 3875,
+  "available_accepted": 291,
+  "available_rejected": 3584,
+  "selected_pairs": 160,
+  "selected_accepted": 80,
+  "selected_rejected": 80,
+  "seed": 20260718,
+  "output_csv": "/tos-mlp-zgci/fxx/runs/agglomeration_calibration_20260718/review/agglomeration_review_160.csv"
+}
