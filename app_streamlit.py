@@ -10,7 +10,12 @@ import cv2
 import numpy as np
 import streamlit as st
 
-from metal_powder_sem_ai.classify_stat import classify_particles
+from metal_powder_sem_ai.classify_stat import (
+    DEFAULT_ROUNDNESS_METHOD,
+    DEFAULT_SPHERICAL_ROUNDNESS_METHOD,
+    DEFAULT_SPHERICAL_ROUNDNESS_THRESHOLD,
+    classify_particles,
+)
 from metal_powder_sem_ai.feature_extract import extract_all_features
 from metal_powder_sem_ai.gui_preview import (
     UploadedImageItem,
@@ -25,7 +30,10 @@ from metal_powder_sem_ai.hollow_gui import (
     run_hollow_pipeline,
     save_uploaded_inputs,
 )
-from metal_powder_sem_ai.postprocess import filter_false_surface_fragments
+from metal_powder_sem_ai.postprocess import (
+    filter_false_background_masks,
+    filter_false_surface_fragments,
+)
 from metal_powder_sem_ai.preprocess import imwrite_unicode, preprocess_sem_image
 from metal_powder_sem_ai.report import export_excel_report
 from metal_powder_sem_ai.segment import (
@@ -767,6 +775,7 @@ def render_hollow_result(
         data=cached_hollow_result_zip(str(output_dir)),
         file_name=f"hollow_powder_{output_dir.parent.name}_{output_dir.name}.zip",
         mime="application/zip",
+        on_click="ignore",
         width="stretch",
     )
     if summary_json_path.is_file():
@@ -775,6 +784,7 @@ def render_hollow_result(
             data=summary_json_path.read_bytes(),
             file_name="hollow_summary.json",
             mime="application/json",
+            on_click="ignore",
             width="stretch",
         )
     if summary_txt_path.is_file():
@@ -783,6 +793,7 @@ def render_hollow_result(
             data=summary_txt_path.read_bytes(),
             file_name="hollow_summary.txt",
             mime="text/plain",
+            on_click="ignore",
             width="stretch",
         )
 
@@ -1479,7 +1490,7 @@ def render_sem_page() -> None:
     blur_ksize = 5
     agglomerate_tolerance_um = 0.30
     min_agglomerate_group_size = 3
-    agglomerate_min_contact_ratio = 0.12
+    agglomerate_min_contact_ratio = 0.09
     agglomerate_min_overlap_ratio = 0.03
 
     if segmenter_name == "maskrcnn":
@@ -1599,7 +1610,7 @@ def render_sem_page() -> None:
             min_area_px = st.number_input("最小颗粒面积 (px)", 1, 100000, 80, 10)
             peak_min_distance = st.number_input("粘连拆分距离", 1, 1000, 12, 1)
 
-    with st.sidebar.expander("团聚率判定（待真值校准）", expanded=False):
+    with st.sidebar.expander("团聚率判定（已人工校准）", expanded=False):
         st.caption(
             "主公式仍为 N_agglom / N_total；以下参数只决定哪些颗粒属于团聚组。"
         )
@@ -1737,10 +1748,15 @@ def render_sem_page() -> None:
                     )
 
             if segmenter_name == "maskrcnn":
+                instances, background_filter_info = filter_false_background_masks(
+                    instances,
+                    image_bgr=pre.image,
+                )
                 instances, postprocess_info = filter_false_surface_fragments(
                     instances,
                     pixel_size_um=pixel_size_um,
                 )
+                segmentation_diagnostics.update(background_filter_info)
                 segmentation_diagnostics.update(postprocess_info)
 
             features = extract_all_features(
@@ -1752,6 +1768,9 @@ def render_sem_page() -> None:
             classified, stats = classify_particles(
                 features,
                 masks=masks,
+                roundness_method=DEFAULT_ROUNDNESS_METHOD,
+                spherical_roundness_method=DEFAULT_SPHERICAL_ROUNDNESS_METHOD,
+                spherical_roundness_threshold=DEFAULT_SPHERICAL_ROUNDNESS_THRESHOLD,
                 agglomerate_tolerance_um=float(agglomerate_tolerance_um),
                 min_agglomerate_group_size=int(min_agglomerate_group_size),
                 agglomerate_min_contact_ratio=float(agglomerate_min_contact_ratio),
@@ -1815,6 +1834,19 @@ def render_sem_page() -> None:
                     f"后处理已启用：过滤 {removed_fragments} 个疑似大颗粒表面假小颗粒，"
                     f"{before_fragments} -> {after_fragments} 个。"
                 )
+            if segmentation_diagnostics.get("background_filter_enabled"):
+                removed_background = int(
+                    segmentation_diagnostics.get(
+                        "background_filter_removed_count",
+                        0,
+                    )
+                    or 0
+                )
+                if removed_background:
+                    st.info(
+                        "背景假掩膜过滤：已删除 "
+                        f"{removed_background} 个同时具有内部切块截断和黑色背景特征的误检。"
+                    )
             max_detection_hint = int(segmentation_diagnostics.get("max_detections", 0) or 0)
             if (
                 max_detection_hint
@@ -1849,7 +1881,11 @@ def render_sem_page() -> None:
         extra_cols[1].metric("球形颗粒率 S", stats["sphericity_rate_s_text"])
         extra_cols[2].metric("球形颗粒数", stats["spherical_particles"])
         extra_cols[3].metric("团聚面积率 P_area", stats["agglomerate_area_rate_text"])
-        st.caption("Q/C 采用 Crofton 周长；球形颗粒按 C >= 0.9075 判定。")
+        st.caption(
+            "报告 Q/C 采用原始 Crofton 周长；球形判定采用 "
+            "0.75 x 开运算 Crofton C + 0.25 x 平滑 Crofton C，"
+            f"阈值为 {float(stats.get('spherical_roundness_threshold', 0.0)):.4f}。"
+        )
         st.caption(
             "团聚判定：至少 "
             f"{int(stats.get('agglomerate_min_group_size', 3))} 颗成组，"
@@ -1887,6 +1923,7 @@ def render_sem_page() -> None:
                 data=f.read(),
                 file_name="metal_powder_sem_report.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                on_click="ignore",
                 width="stretch",
             )
         with open(visual_path, "rb") as f:
@@ -1895,6 +1932,7 @@ def render_sem_page() -> None:
                 data=f.read(),
                 file_name="metal_powder_sem_visualized.png",
                 mime="image/png",
+                on_click="ignore",
                 width="stretch",
             )
         with open(output_dir / "report.particles.csv", "rb") as f:
@@ -1903,6 +1941,7 @@ def render_sem_page() -> None:
                 data=f.read(),
                 file_name="metal_powder_particles.csv",
                 mime="text/csv",
+                on_click="ignore",
                 width="stretch",
             )
 

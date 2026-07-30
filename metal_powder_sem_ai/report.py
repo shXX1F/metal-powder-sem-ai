@@ -27,6 +27,9 @@ PARTICLE_COLUMNS = [
     "touches_image_border",
     "is_spherical",
     "spherical_rule",
+    "spherical_roundness",
+    "spherical_roundness_method",
+    "spherical_roundness_fallback",
     "is_hollow",
     "is_agglomerate",
     "agglomerate_group_id",
@@ -62,6 +65,9 @@ RENAME_MAP = {
     "touches_image_border": "是否接触图像边界",
     "is_spherical": "是否球形颗粒",
     "spherical_rule": "球形判定规则",
+    "spherical_roundness": "球形判定圆形度",
+    "spherical_roundness_method": "球形判定圆形度方法",
+    "spherical_roundness_fallback": "球形判定特征是否回退",
     "is_hollow": "是否空心粉",
     "is_agglomerate": "是否团聚体",
     "agglomerate_group_id": "团聚体Group ID",
@@ -139,6 +145,12 @@ def export_excel_report(
             "球形轴比阈值",
         ]
     )
+    stats_headers.extend(
+        [
+            "球形判定圆形度方法",
+            "球形判定特征回退颗粒数",
+        ]
+    )
     stats_row = [
         stats["total_particles"],
         stats["mean_sphericity_q_text"],
@@ -184,6 +196,12 @@ def export_excel_report(
             stats.get("spherical_rule", ""),
             stats.get("spherical_roundness_threshold", ""),
             stats.get("spherical_axis_ratio_threshold", ""),
+        ]
+    )
+    stats_row.extend(
+        [
+            stats.get("spherical_roundness_method", ""),
+            stats.get("spherical_roundness_fallback_particles", 0),
         ]
     )
 

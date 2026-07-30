@@ -28,6 +28,51 @@ ROUNDNESS_KEYS = {
     "subpixel": ("q_value_subpixel", "roundness_subpixel"),
 }
 
+DEFAULT_ROUNDNESS_METHOD = "crofton"
+DEFAULT_SPHERICAL_ROUNDNESS_METHOD = "crofton_open3_smooth3_blend"
+DEFAULT_SPHERICAL_ROUNDNESS_THRESHOLD = 0.9490
+
+SPHERICAL_ROUNDNESS_METHODS = {
+    "report": (),
+    "contour": (("roundness_contour", 1.0),),
+    "crofton": (("roundness_crofton", 1.0),),
+    "subpixel": (("roundness_subpixel", 1.0),),
+    "crofton_open3": (("roundness_crofton_open3", 1.0),),
+    "crofton_close3": (("roundness_crofton_close3", 1.0),),
+    "crofton_smooth3": (("roundness_crofton_smooth3", 1.0),),
+    "crofton_open3_smooth3_blend": (
+        ("roundness_crofton_open3", 0.75),
+        ("roundness_crofton_smooth3", 0.25),
+    ),
+}
+
+
+def _spherical_roundness_value(
+    feature: Dict,
+    method: str,
+    report_roundness_key: str,
+) -> Tuple[float, bool]:
+    """Return the classifier roundness and whether a compatibility fallback was used."""
+    if method not in SPHERICAL_ROUNDNESS_METHODS:
+        raise ValueError(f"Unknown spherical roundness method: {method}")
+
+    components = SPHERICAL_ROUNDNESS_METHODS[method]
+    if method == "report":
+        value = feature.get(report_roundness_key, feature.get("roundness", 0.0))
+        return float(value or 0.0), False
+
+    weighted_value = 0.0
+    for key, weight in components:
+        value = feature.get(key)
+        if value is None or not math.isfinite(float(value)):
+            fallback = feature.get(
+                report_roundness_key,
+                feature.get("roundness", 0.0),
+            )
+            return float(fallback or 0.0), True
+        weighted_value += float(weight) * float(value)
+    return min(1.0, max(0.0, weighted_value)), False
+
 
 def reference_percentile(values: Sequence[float], q: float) -> Optional[float]:
     """Use the lower observed rank used by the supplied reference software."""
@@ -305,7 +350,7 @@ def detect_agglomerate_pairs(
     masks: Optional[Sequence[np.ndarray]] = None,
     tolerance_px: int = 3,
     min_particle_diameter_px: float = 3.0,
-    min_contact_ratio: float = 0.12,
+    min_contact_ratio: float = 0.09,
     min_overlap_ratio: float = 0.03,
     pixel_size_um: Optional[float] = None,
 ) -> List[Tuple[int, int]]:
@@ -353,7 +398,7 @@ def detect_agglomerate_pair_evidence(
     masks: Optional[Sequence[np.ndarray]] = None,
     tolerance_px: int = 3,
     min_particle_diameter_px: float = 3.0,
-    min_contact_ratio: float = 0.12,
+    min_contact_ratio: float = 0.09,
     min_overlap_ratio: float = 0.03,
     pixel_size_um: Optional[float] = None,
 ) -> List[Dict]:
@@ -468,19 +513,24 @@ def classify_particles(
     masks: Optional[Sequence[np.ndarray]] = None,
     hollow_threshold: float = 0.25,
     spherical_axis_ratio_threshold: float = 1.2,
-    spherical_roundness_threshold: float = 0.9075,
+    spherical_roundness_threshold: float = DEFAULT_SPHERICAL_ROUNDNESS_THRESHOLD,
     spherical_rule: str = "roundness",
     agglomerate_tolerance_px: int = 3,
     agglomerate_tolerance_um: Optional[float] = None,
     min_agglomerate_group_size: int = 3,
-    agglomerate_min_contact_ratio: float = 0.12,
+    agglomerate_min_contact_ratio: float = 0.09,
     agglomerate_min_overlap_ratio: float = 0.03,
     diameter_method: str = "feret_max",
-    roundness_method: str = "crofton",
+    roundness_method: str = DEFAULT_ROUNDNESS_METHOD,
+    spherical_roundness_method: str = DEFAULT_SPHERICAL_ROUNDNESS_METHOD,
     exclude_border_from_size_statistics: bool = False,
 ) -> Tuple[List[Dict], Dict]:
     if roundness_method not in ROUNDNESS_KEYS:
         raise ValueError(f"Unknown roundness method: {roundness_method}")
+    if spherical_roundness_method not in SPHERICAL_ROUNDNESS_METHODS:
+        raise ValueError(
+            f"Unknown spherical roundness method: {spherical_roundness_method}"
+        )
     if spherical_rule not in {"roundness", "axis_ratio", "hybrid"}:
         raise ValueError(f"Unknown spherical rule: {spherical_rule}")
     q_key, roundness_key = ROUNDNESS_KEYS[roundness_method]
@@ -492,13 +542,23 @@ def classify_particles(
             item.get(roundness_key, item.get("roundness", 0.0)) or 0.0
         )
         item["roundness_method"] = roundness_method
+        (
+            item["spherical_roundness"],
+            item["spherical_roundness_fallback"],
+        ) = _spherical_roundness_value(
+            item,
+            method=spherical_roundness_method,
+            report_roundness_key=roundness_key,
+        )
+        item["spherical_roundness_method"] = spherical_roundness_method
         item["statistical_diameter_um"] = diameter_value(item, method=diameter_method)
         item["statistical_diameter_method"] = diameter_method
         # 空心粉：孔隙面积 >= 颗粒总面积的 25%。
         item["is_hollow"] = float(item["hole_ratio"]) >= hollow_threshold
         # 球形颗粒默认按参考统计口径使用圆形度阈值；轴比规则保留为可选项。
         roundness_spherical = (
-            float(item["roundness"]) >= float(spherical_roundness_threshold)
+            float(item["spherical_roundness"])
+            >= float(spherical_roundness_threshold)
         )
         axis_ratio_spherical = (
             float(item["axis_ratio"]) <= float(spherical_axis_ratio_threshold)
@@ -686,7 +746,11 @@ def classify_particles(
         "mean_roundness_text": f"{mean_roundness:.4f}",
         "roundness_method": roundness_method,
         "spherical_rule": spherical_rule,
+        "spherical_roundness_method": spherical_roundness_method,
         "spherical_roundness_threshold": float(spherical_roundness_threshold),
+        "spherical_roundness_fallback_particles": sum(
+            1 for item in classified if item["spherical_roundness_fallback"]
+        ),
         "spherical_axis_ratio_threshold": float(spherical_axis_ratio_threshold),
         "spherical_particles": spherical_count,
         "hollow_particles": hollow_count,

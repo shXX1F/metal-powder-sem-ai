@@ -1,6 +1,6 @@
 # 金属粉末 SEM 图像 AI 识别系统
 
-本项目实现：球形度 Q = 4*pi*A/P^2、圆形度 C = sqrt(Q)、球形率 S = n/N*100%、空心粉孔洞占比 >=25%，以及尺度感知的团聚颗粒组判定。生产默认球形规则为 Crofton 周长下 C >= 0.9075；团聚率同时输出数量口径和面积口径。
+本项目实现：球形度 Q = 4*pi*A/P^2、圆形度 C = sqrt(Q)、球形率 S = n/N*100%、空心粉孔洞占比 >=25%，以及尺度感知的团聚颗粒组判定。报告 Q/C 使用原始 Crofton 周长；生产球形判定使用 `0.75*C_open3 + 0.25*C_smooth3 >= 0.9490`。团聚率同时输出数量口径和面积口径。
 
 ## 模块划分与数据流
 
@@ -120,13 +120,14 @@ python -m metal_powder_sem_ai.train classifier ^
 ## 核心判定逻辑
 
 - 球形度：`Q = 4*pi*A/P^2`
-- 球形颗粒：生产默认按 Crofton 圆形度 C >= 0.9075；轴比规则保留为可选项
+- 圆形度报告：原始掩膜使用 Crofton 周长，`C = sqrt(4*pi*A/P^2)`；固定 20 图上平均圆形度 MAE 为 `0.00684`
+- 球形颗粒：使用 `0.75*C_open3 + 0.25*C_smooth3 >= 0.9490`；该方法仅用于球形分类，不改写报告中的 Q/C
 - 球形率：`S = 球形颗粒数 / 总颗粒数 * 100%`，用 GB/T 8170 的五留双规则保留两位小数
 - 空心粉：`hole_area / particle_area >= 0.25`
 - 团聚体：物理间隙满足阈值，并具有足够接触弧或掩膜重叠；至少 3 颗形成强接触连通组
 - 跨倍率换算：tolerance_px = ceil(tolerance_um / pixel_size_um)
 
-团聚率工程默认参数为 0.30 um、接触弧占比 0.12、掩膜重叠占比 0.03。它们必须使用人工团聚真值进一步校准，流程见 docs/agglomeration_calibration_workflow.md。
+团聚率生产参数为 0.30 um、接触弧占比 0.09、掩膜重叠占比 0.03。该组合由 203 个人工复核颗粒对校准得到，颗粒对 F1 为 0.9615、平衡准确率为 0.9493。流程见 `docs/agglomeration_calibration_workflow.md`，当前机器可读配置见 `docs/production_calibration_20260724.json`。
 
 ## 双页面 GUI
 

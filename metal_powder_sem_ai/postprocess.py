@@ -69,6 +69,181 @@ def _metrics(instance: InstanceMask) -> Dict[str, float]:
     }
 
 
+def _background_support_metrics(
+    instance: InstanceMask,
+    gray: np.ndarray,
+    ring_width_px: int,
+) -> Optional[Dict[str, float]]:
+    height, width = gray.shape[:2]
+    padding = max(2, int(ring_width_px))
+    x1, y1, x2, y2 = _expanded_bbox(instance.bbox_xyxy, padding)
+    region = (
+        max(0, x1),
+        max(0, y1),
+        min(width, x2),
+        min(height, y2),
+    )
+    rx1, ry1, rx2, ry2 = region
+    if rx2 <= rx1 or ry2 <= ry1:
+        return None
+
+    mask = _mask_in_region(instance, region)
+    inside = gray[ry1:ry2, rx1:rx2][mask]
+    if inside.size < 16:
+        return None
+
+    kernel_size = 2 * padding + 1
+    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+    dilated = cv2.dilate(mask.astype(np.uint8), kernel, iterations=1) > 0
+    ring = np.logical_and(dilated, np.logical_not(mask))
+    ring_values = gray[ry1:ry2, rx1:rx2][ring]
+    if ring_values.size < 16:
+        return None
+
+    inside_values = inside.astype(np.float32)
+    ring_values = ring_values.astype(np.float32)
+    background_level = float(np.median(ring_values))
+    high_reference = float(
+        np.percentile(np.concatenate([inside_values, ring_values]), 95)
+    )
+    dynamic_range = max(0.0, high_reference - background_level)
+    support_threshold = background_level + max(5.0, 0.25 * dynamic_range)
+    bright_fraction = float(np.mean(inside_values >= support_threshold))
+    median_contrast = float(np.median(inside_values) - background_level)
+    return {
+        "background_level": background_level,
+        "high_reference": high_reference,
+        "dynamic_range": dynamic_range,
+        "support_threshold": support_threshold,
+        "bright_fraction": bright_fraction,
+        "median_contrast": median_contrast,
+    }
+
+
+def _near_internal_tile_edge_sides(
+    instance: InstanceMask,
+    image_width: int,
+    image_height: int,
+    margin_fraction: float = 0.03,
+    max_margin_px: int = 24,
+) -> Tuple[str, ...]:
+    """Return internal tile sides close to a tiled detection's mask boundary."""
+    if instance.source != "tiled" or instance.tile_xyxy is None:
+        return ()
+
+    x1, y1, x2, y2 = [int(value) for value in instance.bbox_xyxy]
+    tx1, ty1, tx2, ty2 = [int(value) for value in instance.tile_xyxy]
+    tile_span = max(1, tx2 - tx1, ty2 - ty1)
+    margin = max(
+        3,
+        min(int(max_margin_px), int(round(tile_span * float(margin_fraction)))),
+    )
+    sides: List[str] = []
+    if tx1 > 0 and 0 <= x1 - tx1 <= margin:
+        sides.append("left")
+    if tx2 < int(image_width) and 0 <= tx2 - x2 <= margin:
+        sides.append("right")
+    if ty1 > 0 and 0 <= y1 - ty1 <= margin:
+        sides.append("top")
+    if ty2 < int(image_height) and 0 <= ty2 - y2 <= margin:
+        sides.append("bottom")
+    return tuple(sides)
+
+
+def filter_false_background_masks(
+    instances: Sequence[InstanceMask],
+    image_bgr: np.ndarray,
+    enabled: bool = True,
+    ring_width_px: int = 6,
+    min_dynamic_range: float = 20.0,
+    max_background_bright_fraction: float = 0.35,
+    min_particle_contrast: float = 8.0,
+) -> Tuple[List[InstanceMask], Dict[str, object]]:
+    """Remove background-like masks clipped by an internal inference tile edge.
+
+    The filter deliberately requires both signals. A dark region alone is not
+    removed, and a genuine bright particle crossing a tile boundary is kept.
+    """
+
+    before_count = len(instances)
+    info: Dict[str, object] = {
+        "background_filter_enabled": bool(enabled),
+        "background_filter_before_count": before_count,
+        "background_filter_after_count": before_count,
+        "background_filter_removed_count": 0,
+        "background_filter_removed_particle_ids": "",
+        "background_filter_removed_details": [],
+    }
+    if not enabled or before_count == 0:
+        return list(instances), info
+
+    if image_bgr.ndim == 2:
+        gray = image_bgr
+    else:
+        gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+
+    kept: List[InstanceMask] = []
+    removed_ids: List[str] = []
+    removed_details: List[Dict[str, object]] = []
+    for instance in instances:
+        touched_sides = tuple(instance.internal_tile_edge_sides or ())
+        if not touched_sides:
+            touched_sides = _near_internal_tile_edge_sides(
+                instance,
+                image_width=gray.shape[1],
+                image_height=gray.shape[0],
+            )
+        if not touched_sides:
+            kept.append(instance)
+            continue
+
+        metrics = _background_support_metrics(
+            instance,
+            gray=gray,
+            ring_width_px=ring_width_px,
+        )
+        if metrics is None:
+            kept.append(instance)
+            continue
+
+        dynamic_range = float(metrics["dynamic_range"])
+        bright_fraction = float(metrics["bright_fraction"])
+        contrast_limit = max(
+            float(min_particle_contrast),
+            0.10 * dynamic_range,
+        )
+        background_like = (
+            dynamic_range >= float(min_dynamic_range)
+            and bright_fraction < float(max_background_bright_fraction)
+            and float(metrics["median_contrast"]) < contrast_limit
+        )
+        if not background_like:
+            kept.append(instance)
+            continue
+
+        particle_id = int(instance.particle_id)
+        removed_ids.append(str(particle_id))
+        removed_details.append(
+            {
+                "particle_id": particle_id,
+                "source": instance.source,
+                "internal_tile_edge_sides": ",".join(touched_sides),
+                **metrics,
+            }
+        )
+
+    kept = renumber_instances(kept)
+    info.update(
+        {
+            "background_filter_after_count": len(kept),
+            "background_filter_removed_count": len(removed_ids),
+            "background_filter_removed_particle_ids": ",".join(removed_ids),
+            "background_filter_removed_details": removed_details,
+        }
+    )
+    return kept, info
+
+
 def filter_false_surface_fragments(
     instances: Sequence[InstanceMask],
     pixel_size_um: Optional[float] = None,

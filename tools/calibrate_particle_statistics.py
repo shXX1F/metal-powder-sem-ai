@@ -21,12 +21,20 @@ DIAMETER_CANDIDATES = {
 ROUNDNESS_CANDIDATES = {
     "contour": "roundness_contour",
     "crofton": "roundness_crofton",
+    "crofton2": "roundness_crofton2",
+    "crofton_close3": "roundness_crofton_close3",
+    "crofton_open3": "roundness_crofton_open3",
+    "crofton_smooth3": "roundness_crofton_smooth3",
     "subpixel": "roundness_subpixel",
 }
 
 Q_CANDIDATES = {
     "contour": "q_value_contour",
     "crofton": "q_value_crofton",
+    "crofton2": "q_value_crofton2",
+    "crofton_close3": "q_value_crofton_close3",
+    "crofton_open3": "q_value_crofton_open3",
+    "crofton_smooth3": "q_value_crofton_smooth3",
     "subpixel": "q_value_subpixel",
 }
 

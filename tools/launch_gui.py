@@ -11,6 +11,8 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
+from gui_source_state import source_signature
+
 
 def health_ok(port: int, timeout: float = 1.0) -> bool:
     url = f"http://127.0.0.1:{port}/_stcore/health"
@@ -104,16 +106,25 @@ def main() -> int:
     log_path = run_dir / "gui_server.log"
     supervisor_pid_file = run_dir / "gui_supervisor.pid"
     host_file = run_dir / "gui_host.txt"
+    signature_file = run_dir / "gui_source_signature.txt"
     stop_file = run_dir / "gui.stop"
     local_url = f"http://127.0.0.1:{args.port}"
+    current_signature = source_signature(project_root)
 
     if health_ok(args.port):
         try:
             current_host = host_file.read_text(encoding="ascii").strip()
         except OSError:
             current_host = ""
+        try:
+            running_signature = signature_file.read_text(
+                encoding="ascii"
+            ).strip()
+        except OSError:
+            running_signature = ""
         needs_lan_restart = args.host == "0.0.0.0" and current_host == "127.0.0.1"
-        if not needs_lan_restart:
+        source_changed = running_signature != current_signature
+        if not needs_lan_restart and not source_changed:
             print(f"GUI 已经在运行：{local_url}")
             if not args.no_browser:
                 webbrowser.open(local_url)
