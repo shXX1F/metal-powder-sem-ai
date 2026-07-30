@@ -9,6 +9,8 @@ import cv2
 import numpy as np
 
 from metal_powder_sem_ai.classify_stat import (
+    DEFAULT_SPHERICAL_ROUNDNESS_METHOD,
+    DEFAULT_SPHERICAL_ROUNDNESS_THRESHOLD,
     classify_particles,
     reference_percentile,
     summarize_size_distribution,
@@ -44,6 +46,14 @@ class CalibratedStatisticsTests(unittest.TestCase):
         self.assertAlmostEqual(feature["feret_diameter_px"], 20.0, delta=1.0)
         self.assertGreater(feature["roundness_crofton"], 0.90)
         self.assertLessEqual(feature["roundness_crofton"], 1.0)
+        for key in (
+            "roundness_crofton2",
+            "roundness_crofton_close3",
+            "roundness_crofton_open3",
+            "roundness_crofton_smooth3",
+        ):
+            self.assertGreater(feature[key], 0.0)
+            self.assertLessEqual(feature[key], 1.0)
         self.assertFalse(feature["touches_image_border"])
 
     def test_border_flag(self):
@@ -100,6 +110,49 @@ class CalibratedStatisticsTests(unittest.TestCase):
         )
         self.assertTrue(classified[0]["is_spherical"])
         self.assertEqual(stats["spherical_rule"], "roundness")
+
+    def test_spherical_classifier_uses_calibrated_blend_without_changing_report(self):
+        feature = extract_particle_features(
+            circle_instance(),
+            pixel_size_um=0.5,
+            image_shape=(80, 80),
+        )
+        classified, stats = classify_particles(
+            [feature],
+            spherical_roundness_method=DEFAULT_SPHERICAL_ROUNDNESS_METHOD,
+            spherical_roundness_threshold=DEFAULT_SPHERICAL_ROUNDNESS_THRESHOLD,
+        )
+        expected = (
+            0.75 * feature["roundness_crofton_open3"]
+            + 0.25 * feature["roundness_crofton_smooth3"]
+        )
+        self.assertAlmostEqual(classified[0]["roundness"], feature["roundness_crofton"])
+        self.assertAlmostEqual(classified[0]["spherical_roundness"], expected)
+        self.assertEqual(
+            classified[0]["spherical_roundness_method"],
+            DEFAULT_SPHERICAL_ROUNDNESS_METHOD,
+        )
+        self.assertFalse(classified[0]["spherical_roundness_fallback"])
+        self.assertEqual(stats["spherical_roundness_fallback_particles"], 0)
+
+    def test_spherical_classifier_falls_back_for_legacy_features(self):
+        feature = extract_particle_features(
+            circle_instance(),
+            pixel_size_um=0.5,
+            image_shape=(80, 80),
+        )
+        feature.pop("roundness_crofton_open3")
+        classified, stats = classify_particles(
+            [feature],
+            spherical_roundness_method=DEFAULT_SPHERICAL_ROUNDNESS_METHOD,
+            spherical_roundness_threshold=DEFAULT_SPHERICAL_ROUNDNESS_THRESHOLD,
+        )
+        self.assertEqual(
+            classified[0]["spherical_roundness"],
+            feature["roundness_crofton"],
+        )
+        self.assertTrue(classified[0]["spherical_roundness_fallback"])
+        self.assertEqual(stats["spherical_roundness_fallback_particles"], 1)
 
     def test_agglomerate_tolerance_is_scale_aware(self):
         feature_half_um = extract_particle_features(
@@ -197,7 +250,10 @@ class CalibratedStatisticsTests(unittest.TestCase):
             self.assertEqual(row["粒径口径"], "feret_max")
             self.assertEqual(row["圆形度周长口径"], "crofton")
             self.assertEqual(row["球形判定规则"], "roundness")
-            self.assertAlmostEqual(float(row["球形圆形度阈值C"]), 0.9075)
+            self.assertAlmostEqual(
+                float(row["球形圆形度阈值C"]),
+                DEFAULT_SPHERICAL_ROUNDNESS_THRESHOLD,
+            )
             evidence_csv = output.with_suffix(".agglomerate_pairs.csv")
             self.assertTrue(evidence_csv.exists())
 

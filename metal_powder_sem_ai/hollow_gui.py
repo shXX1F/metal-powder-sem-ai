@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import locale
+import os
 import subprocess
 import sys
 import zipfile
@@ -15,6 +16,30 @@ from metal_powder_sem_ai.gui_preview import collect_uploaded_images
 DEFAULT_PARTICLE_MODEL = Path("hollow_version0/model/particle/particle.pt")
 DEFAULT_HOLLOW_MODEL = Path("hollow_version0/model/hollow/hollow.pt")
 HOLLOW_RUNNER = Path("hollow_version0/code/mytools/run_hollow_report.py")
+
+
+def _subprocess_environment(project_root: Path) -> dict[str, str]:
+    """Preserve the GUI's runtime dependencies for the inference subprocess."""
+    env = os.environ.copy()
+    python_paths = [str(project_root)]
+    python_paths.extend(path for path in sys.path if path)
+
+    inherited = env.get("PYTHONPATH")
+    if inherited:
+        python_paths.extend(path for path in inherited.split(os.pathsep) if path)
+
+    unique_paths: list[str] = []
+    seen: set[str] = set()
+    for path in python_paths:
+        normalized = os.path.normcase(os.path.abspath(path))
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        unique_paths.append(path)
+
+    env["PYTHONPATH"] = os.pathsep.join(unique_paths)
+    env.setdefault("PYTHONUTF8", "1")
+    return env
 
 
 def _unique_path(folder: Path, file_name: str) -> Path:
@@ -138,6 +163,7 @@ def run_hollow_pipeline(
     completed = subprocess.run(
         command,
         cwd=str(project_root),
+        env=_subprocess_environment(project_root),
         capture_output=True,
         text=True,
         encoding=locale.getpreferredencoding(False),

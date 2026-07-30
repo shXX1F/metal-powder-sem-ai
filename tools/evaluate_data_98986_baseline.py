@@ -18,12 +18,18 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from metal_powder_sem_ai.classify_stat import (
+    DEFAULT_SPHERICAL_ROUNDNESS_METHOD,
+    DEFAULT_SPHERICAL_ROUNDNESS_THRESHOLD,
+    SPHERICAL_ROUNDNESS_METHODS,
     classify_particles,
     diameter_value,
     reference_percentile,
 )
 from metal_powder_sem_ai.feature_extract import extract_all_features
-from metal_powder_sem_ai.postprocess import filter_false_surface_fragments
+from metal_powder_sem_ai.postprocess import (
+    filter_false_background_masks,
+    filter_false_surface_fragments,
+)
 from metal_powder_sem_ai.preprocess import imwrite_unicode, preprocess_sem_image
 from metal_powder_sem_ai.segment import (
     ClassicalParticleSegmenter,
@@ -45,6 +51,7 @@ SUMMARY_COLUMNS = [
     "inference_mode",
     "diameter_method",
     "roundness_method",
+    "spherical_roundness_method",
     "system_spherical_roundness_threshold",
     "reference_spherical_roundness_threshold",
     "score_threshold",
@@ -57,6 +64,8 @@ SUMMARY_COLUMNS = [
     "system_total_particles",
     "reference_total_particles",
     "postprocess_removed_count",
+    "postprocess_background_removed_count",
+    "postprocess_surface_removed_count",
     "postprocess_before_count",
     "postprocess_after_count",
     "particle_count_error",
@@ -127,6 +136,10 @@ PARTICLE_COLUMNS = [
     "statistical_diameter_method",
     "perimeter_contour_px",
     "perimeter_crofton_px",
+    "perimeter_crofton2_px",
+    "perimeter_crofton_close3_px",
+    "perimeter_crofton_open3_px",
+    "perimeter_crofton_smooth3_px",
     "perimeter_subpixel_px",
     "q_value",
     "roundness",
@@ -134,8 +147,19 @@ PARTICLE_COLUMNS = [
     "roundness_contour",
     "q_value_crofton",
     "roundness_crofton",
+    "q_value_crofton2",
+    "roundness_crofton2",
+    "q_value_crofton_close3",
+    "roundness_crofton_close3",
+    "q_value_crofton_open3",
+    "roundness_crofton_open3",
+    "q_value_crofton_smooth3",
+    "roundness_crofton_smooth3",
     "q_value_subpixel",
     "roundness_subpixel",
+    "spherical_roundness",
+    "spherical_roundness_method",
+    "spherical_roundness_fallback",
     "axis_ratio",
     "is_spherical",
     "is_agglomerate",
@@ -278,8 +302,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--spherical-roundness-threshold",
         type=float,
-        default=0.9075,
+        default=DEFAULT_SPHERICAL_ROUNDNESS_THRESHOLD,
         help="Roundness C threshold used to classify a particle as spherical.",
+    )
+    parser.add_argument(
+        "--spherical-roundness-method",
+        choices=sorted(SPHERICAL_ROUNDNESS_METHODS),
+        default=DEFAULT_SPHERICAL_ROUNDNESS_METHOD,
+        help=(
+            "Roundness feature used only for spherical classification. "
+            "The reported mean Q/C still follows --roundness-method."
+        ),
     )
     parser.add_argument(
         "--reference-spherical-roundness-threshold",
@@ -340,12 +373,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--agglomerate-tolerance-um", type=float, default=0.30)
     parser.add_argument("--min-agglomerate-group-size", type=int, default=3)
-    parser.add_argument("--agglomerate-min-contact-ratio", type=float, default=0.12)
+    parser.add_argument("--agglomerate-min-contact-ratio", type=float, default=0.09)
     parser.add_argument("--agglomerate-min-overlap-ratio", type=float, default=0.03)
     parser.add_argument("--crop-bottom-fraction", type=float, default=0.12)
     parser.add_argument("--blur-ksize", type=int, default=5)
     parser.add_argument("--min-area-px", type=int, default=80)
     parser.add_argument("--peak-min-distance", type=int, default=12)
+    parser.add_argument(
+        "--postprocess-background-artifacts",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Remove background-like masks that are clipped by an internal "
+            "inference tile edge."
+        ),
+    )
     parser.add_argument(
         "--postprocess-fragments",
         action=argparse.BooleanOptionalAction,
@@ -786,6 +828,7 @@ def evaluate_item(
         else (args.inference_mode or ("merged" if args.merge_inference else "tiled")),
         "diameter_method": str(args.diameter_method),
         "roundness_method": str(args.roundness_method),
+        "spherical_roundness_method": str(args.spherical_roundness_method),
         "system_spherical_roundness_threshold": float(
             args.spherical_roundness_threshold
         ),
@@ -820,7 +863,12 @@ def evaluate_item(
         instances = segmenter.segment(pre.binary)
     else:
         instances = segment_image(pre.image, segmenter, args)
-        instances, postprocess_info = filter_false_surface_fragments(
+        instances, background_filter_info = filter_false_background_masks(
+            instances,
+            image_bgr=pre.image,
+            enabled=bool(args.postprocess_background_artifacts),
+        )
+        instances, surface_filter_info = filter_false_surface_fragments(
             instances,
             pixel_size_um=pixel_size_um,
             enabled=bool(args.postprocess_fragments),
@@ -829,9 +877,31 @@ def evaluate_item(
             min_parent_child_diameter_ratio=float(args.postprocess_parent_child_ratio),
             surface_contact_distance_factor=float(args.postprocess_surface_distance_factor),
         )
+        postprocess_info = {
+            **background_filter_info,
+            **surface_filter_info,
+            "postprocess_removed_count": (
+                int(background_filter_info["background_filter_removed_count"])
+                + int(surface_filter_info["postprocess_removed_count"])
+            ),
+            "postprocess_background_removed_count": int(
+                background_filter_info["background_filter_removed_count"]
+            ),
+            "postprocess_surface_removed_count": int(
+                surface_filter_info["postprocess_removed_count"]
+            ),
+            "postprocess_before_count": int(
+                background_filter_info["background_filter_before_count"]
+            ),
+            "postprocess_after_count": int(
+                surface_filter_info["postprocess_after_count"]
+            ),
+        }
     if args.segmenter == "classical":
         postprocess_info = {
             "postprocess_removed_count": 0,
+            "postprocess_background_removed_count": 0,
+            "postprocess_surface_removed_count": 0,
             "postprocess_before_count": len(instances),
             "postprocess_after_count": len(instances),
         }
@@ -846,6 +916,7 @@ def evaluate_item(
         masks=masks,
         diameter_method=str(args.diameter_method),
         roundness_method=str(args.roundness_method),
+        spherical_roundness_method=str(args.spherical_roundness_method),
         spherical_roundness_threshold=float(args.spherical_roundness_threshold),
         spherical_rule="roundness",
         agglomerate_tolerance_um=float(args.agglomerate_tolerance_um),
@@ -937,6 +1008,12 @@ def evaluate_item(
         "system_total_particles": int(stats["total_particles"]),
         "reference_total_particles": reference_total,
         "postprocess_removed_count": int(postprocess_info.get("postprocess_removed_count", 0) or 0),
+        "postprocess_background_removed_count": int(
+            postprocess_info.get("postprocess_background_removed_count", 0) or 0
+        ),
+        "postprocess_surface_removed_count": int(
+            postprocess_info.get("postprocess_surface_removed_count", 0) or 0
+        ),
         "postprocess_before_count": int(postprocess_info.get("postprocess_before_count", len(instances)) or 0),
         "postprocess_after_count": int(postprocess_info.get("postprocess_after_count", len(instances)) or 0),
         "particle_count_error": int(stats["total_particles"]) - int(reference_total or 0),

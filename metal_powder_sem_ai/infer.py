@@ -3,7 +3,13 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .classify_stat import classify_particles, format_stats
+from .classify_stat import (
+    DEFAULT_ROUNDNESS_METHOD,
+    DEFAULT_SPHERICAL_ROUNDNESS_METHOD,
+    DEFAULT_SPHERICAL_ROUNDNESS_THRESHOLD,
+    classify_particles,
+    format_stats,
+)
 from .feature_extract import extract_all_features
 from .preprocess import (
     imread_unicode,
@@ -49,7 +55,7 @@ def parse_args() -> argparse.Namespace:
         help="团聚接触最大物理间隙，系统会按 pixel_size_um 换算为像素",
     )
     parser.add_argument("--min-agglomerate-group-size", type=int, default=3)
-    parser.add_argument("--agglomerate-min-contact-ratio", type=float, default=0.12)
+    parser.add_argument("--agglomerate-min-contact-ratio", type=float, default=0.09)
     parser.add_argument("--agglomerate-min-overlap-ratio", type=float, default=0.03)
     return parser.parse_args()
 
@@ -90,6 +96,9 @@ def main() -> None:
     classified, stats = classify_particles(
         features,
         masks=masks,
+        roundness_method=DEFAULT_ROUNDNESS_METHOD,
+        spherical_roundness_method=DEFAULT_SPHERICAL_ROUNDNESS_METHOD,
+        spherical_roundness_threshold=DEFAULT_SPHERICAL_ROUNDNESS_THRESHOLD,
         agglomerate_tolerance_um=args.agglomerate_tolerance_um,
         min_agglomerate_group_size=args.min_agglomerate_group_size,
         agglomerate_min_contact_ratio=args.agglomerate_min_contact_ratio,

@@ -52,11 +52,15 @@ def _max_feret_diameter_px(contour: np.ndarray) -> float:
     return math.sqrt(max_distance_sq)
 
 
-def _crofton_perimeter_px(mask: np.ndarray, fallback: float) -> float:
+def _crofton_perimeter_px(
+    mask: np.ndarray,
+    fallback: float,
+    directions: int = 4,
+) -> float:
     if perimeter_crofton is None:
         return float(fallback)
     padded = np.pad((mask > 0).astype(np.uint8), 1, mode="constant")
-    value = float(perimeter_crofton(padded, directions=4))
+    value = float(perimeter_crofton(padded, directions=int(directions)))
     return value if math.isfinite(value) and value > 0 else float(fallback)
 
 
@@ -81,6 +85,35 @@ def _shape_factor(area_px: float, perimeter_px: float) -> Tuple[float, float]:
     q_value = _safe_divide(4.0 * math.pi * float(area_px), float(perimeter_px) ** 2)
     q_value = min(1.0, max(0.0, q_value))
     return q_value, math.sqrt(q_value)
+
+
+def _crofton_shape_factor(
+    mask: np.ndarray,
+    fallback_perimeter_px: float,
+    directions: int = 4,
+) -> Tuple[float, float, float, int]:
+    mask_u8 = (mask > 0).astype(np.uint8)
+    area_px = int(mask_u8.sum())
+    perimeter_px = _crofton_perimeter_px(
+        mask_u8,
+        fallback=fallback_perimeter_px,
+        directions=directions,
+    )
+    q_value, roundness = _shape_factor(area_px, perimeter_px)
+    return q_value, roundness, perimeter_px, area_px
+
+
+def _roundness_candidate_masks(mask: np.ndarray) -> Dict[str, np.ndarray]:
+    mask_u8 = (mask > 0).astype(np.uint8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    closed = cv2.morphologyEx(mask_u8, cv2.MORPH_CLOSE, kernel)
+    opened = cv2.morphologyEx(mask_u8, cv2.MORPH_OPEN, kernel)
+    smoothed = cv2.morphologyEx(closed, cv2.MORPH_OPEN, kernel)
+    return {
+        "close3": closed,
+        "open3": opened,
+        "smooth3": smoothed,
+    }
 
 
 def _geometric_hole_area_px(mask: np.ndarray) -> int:
@@ -186,15 +219,37 @@ def extract_particle_features(
     perimeter_px = float(cv2.arcLength(contour, closed=True))
     perimeter_um = float(perimeter_px * pixel_size_um)
     perimeter_crofton_px = _crofton_perimeter_px(mask, fallback=perimeter_px)
+    perimeter_crofton2_px = _crofton_perimeter_px(
+        mask,
+        fallback=perimeter_px,
+        directions=2,
+    )
     perimeter_subpixel_px = _subpixel_perimeter_px(mask, fallback=perimeter_px)
     perimeter_crofton_um = perimeter_crofton_px * pixel_size_um
+    perimeter_crofton2_um = perimeter_crofton2_px * pixel_size_um
     perimeter_subpixel_um = perimeter_subpixel_px * pixel_size_um
 
     # 球形度 Q：严格采用金相法公式 Q = 4*pi*A / P^2。
     q_value = _safe_divide(4.0 * math.pi * area_um2, perimeter_um * perimeter_um)
     q_contour, roundness_contour = _shape_factor(area_px, perimeter_px)
     q_crofton, roundness_crofton = _shape_factor(area_px, perimeter_crofton_px)
+    q_crofton2, roundness_crofton2 = _shape_factor(area_px, perimeter_crofton2_px)
     q_subpixel, roundness_subpixel = _shape_factor(area_px, perimeter_subpixel_px)
+    morphology_candidates: Dict[str, Dict[str, float | int]] = {}
+    for candidate_name, candidate_mask in _roundness_candidate_masks(mask).items():
+        candidate_q, candidate_roundness, candidate_perimeter, candidate_area = (
+            _crofton_shape_factor(
+                candidate_mask,
+                fallback_perimeter_px=perimeter_px,
+                directions=4,
+            )
+        )
+        morphology_candidates[candidate_name] = {
+            "q": candidate_q,
+            "roundness": candidate_roundness,
+            "perimeter_px": candidate_perimeter,
+            "area_px": candidate_area,
+        }
     q_value = q_contour
     roundness = roundness_contour
 
@@ -250,6 +305,8 @@ def extract_particle_features(
         "perimeter_contour_um": perimeter_um,
         "perimeter_crofton_px": perimeter_crofton_px,
         "perimeter_crofton_um": perimeter_crofton_um,
+        "perimeter_crofton2_px": perimeter_crofton2_px,
+        "perimeter_crofton2_um": perimeter_crofton2_um,
         "perimeter_subpixel_px": perimeter_subpixel_px,
         "perimeter_subpixel_um": perimeter_subpixel_um,
         "q_value": q_value,
@@ -258,8 +315,26 @@ def extract_particle_features(
         "roundness_contour": roundness_contour,
         "q_value_crofton": q_crofton,
         "roundness_crofton": roundness_crofton,
+        "q_value_crofton2": q_crofton2,
+        "roundness_crofton2": roundness_crofton2,
         "q_value_subpixel": q_subpixel,
         "roundness_subpixel": roundness_subpixel,
+        **{
+            f"q_value_crofton_{name}": float(values["q"])
+            for name, values in morphology_candidates.items()
+        },
+        **{
+            f"roundness_crofton_{name}": float(values["roundness"])
+            for name, values in morphology_candidates.items()
+        },
+        **{
+            f"perimeter_crofton_{name}_px": float(values["perimeter_px"])
+            for name, values in morphology_candidates.items()
+        },
+        **{
+            f"roundness_area_{name}_px": int(values["area_px"])
+            for name, values in morphology_candidates.items()
+        },
         "major_axis_px": major_px,
         "minor_axis_px": minor_px,
         "major_axis_um": major_um,

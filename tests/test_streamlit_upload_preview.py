@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 
@@ -12,6 +13,26 @@ from metal_powder_sem_ai.gui_preview import UploadedImageItem
 
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app_streamlit.py"
+
+
+def test_all_download_buttons_do_not_rerun_the_page() -> None:
+    tree = ast.parse(APP_PATH.read_text(encoding="utf-8"))
+    download_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "download_button"
+    ]
+
+    assert download_calls
+    for call in download_calls:
+        on_click = next(
+            (keyword.value for keyword in call.keywords if keyword.arg == "on_click"),
+            None,
+        )
+        assert isinstance(on_click, ast.Constant)
+        assert on_click.value == "ignore"
 
 
 def png_bytes(width: int = 48, height: int = 32, value: int = 160) -> bytes:

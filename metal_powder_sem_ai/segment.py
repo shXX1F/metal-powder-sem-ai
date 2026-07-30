@@ -16,6 +16,9 @@ class InstanceMask:
     contour: np.ndarray
     bbox_xyxy: Tuple[int, int, int, int]
     score: float = 1.0
+    source: str = "whole"
+    tile_xyxy: Optional[Tuple[int, int, int, int]] = None
+    internal_tile_edge_sides: Tuple[str, ...] = ()
 
 
 @dataclass
@@ -26,6 +29,8 @@ class TileCandidate:
     score: float
     edge_clearance: float
     tile_xyxy: Tuple[int, int, int, int]
+    source: str = "tiled"
+    internal_tile_edge_sides: Tuple[str, ...] = ()
 
 
 def mask_to_contour(mask: np.ndarray) -> Optional[np.ndarray]:
@@ -127,6 +132,29 @@ def tile_edge_clearance(
     x1, y1, x2, y2 = bbox_xyxy
     tx1, ty1, tx2, ty2 = tile_xyxy
     return float(min(x1 - tx1, y1 - ty1, tx2 - x2, ty2 - y2))
+
+
+def internal_tile_edge_sides(
+    bbox_xyxy: Tuple[int, int, int, int],
+    tile_xyxy: Tuple[int, int, int, int],
+    image_width: int,
+    image_height: int,
+    margin_px: int = 1,
+) -> Tuple[str, ...]:
+    """Return internal tile sides touched by a clipped detection."""
+    x1, y1, x2, y2 = [int(value) for value in bbox_xyxy]
+    tx1, ty1, tx2, ty2 = [int(value) for value in tile_xyxy]
+    margin = max(0, int(margin_px))
+    sides: list[str] = []
+    if tx1 > 0 and x1 <= tx1 + margin:
+        sides.append("left")
+    if tx2 < int(image_width) and x2 >= tx2 - margin:
+        sides.append("right")
+    if ty1 > 0 and y1 <= ty1 + margin:
+        sides.append("top")
+    if ty2 < int(image_height) and y2 >= ty2 - margin:
+        sides.append("bottom")
+    return tuple(sides)
 
 
 def mask_overlap_metrics(a: TileCandidate, b: TileCandidate) -> Tuple[float, float]:
@@ -275,6 +303,9 @@ def renumber_instances(instances: Sequence[InstanceMask]) -> List[InstanceMask]:
             contour=instance.contour,
             bbox_xyxy=instance.bbox_xyxy,
             score=float(instance.score),
+            source=instance.source,
+            tile_xyxy=instance.tile_xyxy,
+            internal_tile_edge_sides=instance.internal_tile_edge_sides,
         )
         for idx, instance in enumerate(instances, start=1)
     ]
@@ -305,7 +336,9 @@ def merge_instance_groups(
                     bbox_xyxy=instance.bbox_xyxy,
                     score=float(instance.score),
                     edge_clearance=priority,
-                    tile_xyxy=instance.bbox_xyxy,
+                    tile_xyxy=instance.tile_xyxy or instance.bbox_xyxy,
+                    source=instance.source,
+                    internal_tile_edge_sides=instance.internal_tile_edge_sides,
                 )
             )
 
@@ -326,6 +359,9 @@ def merge_instance_groups(
                 contour=np.round(candidate.contour).astype(np.int32),
                 bbox_xyxy=candidate.bbox_xyxy,
                 score=float(candidate.score),
+                source=candidate.source,
+                tile_xyxy=candidate.tile_xyxy,
+                internal_tile_edge_sides=candidate.internal_tile_edge_sides,
             )
         )
     return instances
@@ -524,6 +560,7 @@ class MaskRCNNSegmenter:
                     contour=contour,
                     bbox_xyxy=bbox,
                     score=float(score),
+                    source="whole",
                 )
             )
             particle_id += 1
@@ -580,6 +617,12 @@ class MaskRCNNSegmenter:
                         core_x1 <= cx < core_x2 and core_y1 <= cy < core_y2
                     ):
                         continue
+                    touched_sides = internal_tile_edge_sides(
+                        bbox,
+                        tile_xyxy,
+                        image_width=width,
+                        image_height=height,
+                    )
                     candidates.append(
                         TileCandidate(
                             mask=instance.mask.astype(np.uint8),
@@ -588,6 +631,8 @@ class MaskRCNNSegmenter:
                             score=float(instance.score),
                             edge_clearance=tile_edge_clearance(bbox, tile_xyxy),
                             tile_xyxy=tile_xyxy,
+                            source="tiled",
+                            internal_tile_edge_sides=touched_sides,
                         )
                     )
 
@@ -606,6 +651,9 @@ class MaskRCNNSegmenter:
                     contour=contour,
                     bbox_xyxy=candidate.bbox_xyxy,
                     score=candidate.score,
+                    source=candidate.source,
+                    tile_xyxy=candidate.tile_xyxy,
+                    internal_tile_edge_sides=candidate.internal_tile_edge_sides,
                 )
             )
         return instances

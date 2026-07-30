@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
 from metal_powder_sem_ai.hollow_gui import (
+    _subprocess_environment,
     build_result_zip,
     load_hollow_result,
     save_uploaded_inputs,
@@ -19,6 +23,56 @@ class FakeUpload:
 
     def getvalue(self) -> bytes:
         return self._data
+
+
+def test_subprocess_environment_preserves_gui_dependency_paths(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    dependency_dir = tmp_path / "deps"
+    dependency_dir.mkdir()
+    inherited_dir = tmp_path / "inherited"
+    inherited_dir.mkdir()
+    monkeypatch.syspath_prepend(str(dependency_dir))
+    monkeypatch.setenv("PYTHONPATH", str(inherited_dir))
+
+    env = _subprocess_environment(tmp_path)
+    python_paths = env["PYTHONPATH"].split(os.pathsep)
+
+    assert python_paths[0] == str(tmp_path)
+    assert str(dependency_dir) in python_paths
+    assert str(inherited_dir) in python_paths
+    assert len(python_paths) == len(
+        {os.path.normcase(os.path.abspath(path)) for path in python_paths}
+    )
+    assert env["PYTHONUTF8"] == "1"
+
+
+def test_subprocess_environment_can_import_dependency_from_parent_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    dependency_dir = tmp_path / "deps"
+    package_dir = dependency_dir / "runtime_probe"
+    package_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text("VALUE = 42\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(dependency_dir))
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import runtime_probe; print(runtime_probe.VALUE)",
+        ],
+        cwd=str(tmp_path),
+        env=_subprocess_environment(tmp_path),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "42"
 
 
 def test_save_uploaded_inputs_flattens_safe_image_members(tmp_path: Path) -> None:

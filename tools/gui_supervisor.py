@@ -11,6 +11,8 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+from gui_source_state import source_signature
+
 
 def timestamp() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -77,9 +79,14 @@ def main() -> int:
     child_pid_file = run_dir / "gui_streamlit.pid"
     supervisor_pid_file = run_dir / "gui_supervisor.pid"
     host_file = run_dir / "gui_host.txt"
+    signature_file = run_dir / "gui_source_signature.txt"
     stop_file.unlink(missing_ok=True)
     supervisor_pid_file.write_text(str(os.getpid()), encoding="ascii")
     host_file.write_text(args.host, encoding="ascii")
+    signature_file.write_text(
+        source_signature(project_root),
+        encoding="ascii",
+    )
 
     stop_requested = False
     child: subprocess.Popen | None = None
@@ -153,6 +160,7 @@ def main() -> int:
         child_pid_file.unlink(missing_ok=True)
         supervisor_pid_file.unlink(missing_ok=True)
         host_file.unlink(missing_ok=True)
+        signature_file.unlink(missing_ok=True)
         stop_file.unlink(missing_ok=True)
         log("Supervisor stopped.")
     return 0
